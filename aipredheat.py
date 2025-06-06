@@ -210,6 +210,7 @@ result = {
 
 }
 
+
 with pd.ExcelWriter('result_ailearn.xlsx') as writer:
     pd.DataFrame(result).to_excel(writer, sheet_name='Test', index=False)
     pd.DataFrame(losses).to_excel(writer, sheet_name='Train', index=False)
