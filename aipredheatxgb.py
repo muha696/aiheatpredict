@@ -9,6 +9,7 @@ from sklearn.model_selection import train_test_split
 from keras.models import Sequential
 from keras.regularizers import l2
 from keras.layers import Dense, Dropout, BatchNormalization
+import xgboost as xgb
 from keras.callbacks import EarlyStopping
 from datetime import datetime
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
@@ -57,6 +58,7 @@ data = pd.read_csv('db640.csv', delimiter=';', decimal=',')
 
 # --- Преобразование даты и время ---
 data['datetime'] = [f'{data["date"][i]} {data["time"][i]}' for i in range(len(data['date']))]
+data.to_excel('check.xlsx', index=False, sheet_name='Sheet1')
 data['datetime'] = data['datetime'].apply(lambda x: datetime.strptime(x, '%d.%m.%Y %H:%M:%S'))
 data['minute'] = data['datetime'].dt.minute
 data['month'] = data['datetime'].dt.month
@@ -112,7 +114,7 @@ new_data['hour_cos'] = (np.cos(2 * np.pi * new_data['hour']  / 24))
 #new_data = new_data[new_data['is_heatperiod'] == False].reset_index(drop=True) #False - обучение для межотопительного, True - отопительного
 
 # --- Сохранение данных для обучения в excel ---
-with pd.ExcelWriter('mlp_datalearn.xlsx') as writer:
+with pd.ExcelWriter('XGBOOST_datalearn.xlsx') as writer:
     new_data.to_excel(writer, sheet_name='Data', index=False)
 
 # --- Подготовка входных и выходных данных для обучения ИИ ---
@@ -123,39 +125,35 @@ y = new_data['q_sc'].values
 
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, shuffle=False)
 
-# --- Модель обучения ---
-model = Sequential()
-model.add(Dense(512, activation='relu', input_dim=X.shape[1], kernel_regularizer=l2(0.001)))
-model.add(Dropout(0.4))
-model.add(Dense(256, activation='relu', kernel_regularizer=l2(0.001)))
-model.add(Dropout(0.3))
-model.add(Dense(128, activation='relu', kernel_regularizer=l2(0.001)))
-model.add(Dropout(0.2))
-model.add(Dense(64, activation='relu', kernel_regularizer=l2(0.001)))
-model.add(Dropout(0.1))
-model.add(Dense(1))
+dtrain = xgb.DMatrix(X_train, label=y_train)
+dval = xgb.DMatrix(X_test, label=y_test)
 
-model.compile(optimizer='adam', loss='mse')
+params = {
+    'max_depth': 6,
+    'learning_rate': 0.05,
+    'subsample': 0.8,
+    'colsample_bytree': 0.8,
+    'objective': 'reg:squarederror',
+    'eval_metric': 'rmse',
+}
 
-# --- Обучение ---
-early_stopping = EarlyStopping(monitor='val_loss', patience=5)
-history = model.fit(X_train, y_train,
-                    epochs=50,
-                    batch_size=512,
-                    validation_data=(X_test, y_test),
-                    callbacks=[early_stopping],
-                    verbose=1)
+evallist = [(dtrain, 'train'), (dval, 'eval')]
+evals_result = {}
 
-# --- Сохранение модели и формулы масштабов в отдельные файлы для использования в других программах ---
-model.save('model_mlp_heatpredict640.keras')
-joblib.dump({'scaler_tair': scaler_tair, 'scaler_day': scaler_day,
-             'scaler_hour': scaler_hour, 'scaler_y': scaler_y,
-             'scaler_month': scaler_month,},
-            'scalers_mlp_heatpredict640.pkl')
 
-# --- Визуализация обучения и работы модели ---
-y_pred = model.predict(X_test)
-y_pred_real = scaler_y.inverse_transform(y_pred).flatten()
+model = xgb.train(
+    params,
+    dtrain,
+    num_boost_round=300,
+    evals=evallist,
+    early_stopping_rounds=50,
+    verbose_eval=True,
+    evals_result=evals_result  # <-- сохраняем результат
+)
+
+# Предсказание
+y_pred = model.predict(dval)
+y_pred_real = scaler_y.inverse_transform(y_pred.reshape(-1, 1)).flatten()
 y_test_real = scaler_y.inverse_transform(y_test.reshape(-1, 1)).flatten()
 
 # --- Ошибка ---
@@ -170,62 +168,23 @@ metrics_df = pd.DataFrame({
     'R2': [r2],
 })
 
-# --- Графики ---
-plt.figure(figsize=(12, 5))
-plt.subplot(1, 3, 1)
-plt.plot(history.history['loss'], label='Train Loss')
-plt.plot(history.history['val_loss'], label='Val Loss')
-plt.title('История обучения')
-plt.legend()
-plt.grid()
 
-losses = {
-    'loss': history.history['loss'],
-    'val_loss': history.history['val_loss'],
-}
-
-plt.subplot(1, 3, 2)
-plt.scatter(y_test_real, y_pred_real, alpha=0.3)
-plt.plot([min(y_test_real), max(y_test_real)],
-         [min(y_test_real), max(y_test_real)], 'r--')
-plt.xlabel('Факт q')
-plt.ylabel('Прогноз q')
-plt.title('Сравнение факта и прогноза')
-plt.grid()
-
-
-plt.subplot(1, 3, 3)
-plt.plot([i for i in range(len(y_pred_real))], y_test_real, linestyle='',
-         color = 'black', marker='o', markerfacecolor='r', markersize=3)
-plt.plot([i for i in range(len(y_pred_real))], y_pred_real, linestyle='',
-         color = 'black', marker='o', markerfacecolor='blue', markersize=3)
-
-plt.show()
+x_full = X
+dfull = xgb.DMatrix(x_full)
+y_pred = model.predict(dfull)
+y_pred_real_full = scaler_y.inverse_transform(y_pred.reshape(-1, 1)).flatten()
 
 q = new_data['q']
-q_pred = scaler_y.inverse_transform(model.predict(X)).flatten()
+
 
 result = {
     'date': new_data['datetime'].dt.date,
     'time': new_data['datetime'].dt.time,
     'qreal': new_data['q'],
-    'qai': q_pred,
-    'mse': (q - q_pred) ** 2,
+    'qai': y_pred_real_full,
 
 }
 
-
-with pd.ExcelWriter('result_ailearn_msl640.xlsx') as writer:
+with pd.ExcelWriter('result_ailearn_xgboost640.xlsx') as writer:
     pd.DataFrame(result).to_excel(writer, sheet_name='Test', index=False)
-    pd.DataFrame(losses).to_excel(writer, sheet_name='Train', index=False)
     metrics_df.to_excel(writer, sheet_name='Metrics', index=False)
-
-
-
-
-
-
-
-
-
-
