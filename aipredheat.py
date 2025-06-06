@@ -11,7 +11,7 @@ from keras.regularizers import l2
 from keras.layers import Dense, Dropout, BatchNormalization
 from keras.callbacks import EarlyStopping
 from datetime import datetime
-from sklearn.metrics import mean_squared_error, mean_absolute_error
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import matplotlib.pyplot as plt
 from scipy import stats
 
@@ -160,7 +160,14 @@ y_test_real = scaler_y.inverse_transform(y_test.reshape(-1, 1)).flatten()
 # --- Ошибка ---
 mse = mean_squared_error(y_test_real, y_pred_real)
 mae = mean_absolute_error(y_test_real, y_pred_real)
-print(f'MSE: {mse:.2f}, MAE: {mae:.2f}')
+r2 = r2_score(y_test_real, y_pred_real)
+print(f'MSE: {mse:.2f}, MAE: {mae:.2f}, R²: {r2:.4f}')
+
+metrics_df = pd.DataFrame({
+    'MSE': [mse],
+    'MAE': [mae],
+    'R2': [r2],
+})
 
 # --- Графики ---
 plt.figure(figsize=(12, 5))
@@ -206,6 +213,7 @@ result = {
 with pd.ExcelWriter('result_ailearn.xlsx') as writer:
     pd.DataFrame(result).to_excel(writer, sheet_name='Test', index=False)
     pd.DataFrame(losses).to_excel(writer, sheet_name='Train', index=False)
+    metrics_df.to_excel(writer, sheet_name='Metrics', index=False)
 
 
 
